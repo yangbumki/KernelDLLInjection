@@ -1,6 +1,59 @@
 #include <Windows.h>
 #include <iostream>
 
+#define NT_OPENPROCESS_TEST		FALSE
+#define MAIN					TRUE
+
+#if NT_OPENPROCESS_TEST
+
+typedef struct _UNICODE_STRING {
+	USHORT Length;
+	USHORT MaximumLength;
+#ifdef MIDL_PASS
+	[size_is(MaximumLength / 2), length_is((Length) / 2)] USHORT* Buffer;
+#else // MIDL_PASS
+	_Field_size_bytes_part_opt_(MaximumLength, Length) PWCH   Buffer;
+#endif // MIDL_PASS
+} UNICODE_STRING;
+typedef UNICODE_STRING* PUNICODE_STRING;
+
+typedef struct _OBJECT_ATTRIBUTES {
+	ULONG Length;
+	HANDLE RootDirectory;
+	PUNICODE_STRING ObjectName;
+	ULONG Attributes;
+	PVOID SecurityDescriptor;        // Points to type SECURITY_DESCRIPTOR
+	PVOID SecurityQualityOfService;  // Points to type SECURITY_QUALITY_OF_SERVICE
+} OBJECT_ATTRIBUTES;
+typedef OBJECT_ATTRIBUTES* POBJECT_ATTRIBUTES;
+typedef CONST OBJECT_ATTRIBUTES* PCOBJECT_ATTRIBUTES;
+
+typedef struct _OBJECT_ATTRIBUTES64 {
+	ULONG Length;
+	ULONG64 RootDirectory;
+	ULONG64 ObjectName;
+	ULONG Attributes;
+	ULONG64 SecurityDescriptor;
+	ULONG64 SecurityQualityOfService;
+} OBJECT_ATTRIBUTES64;
+typedef OBJECT_ATTRIBUTES64* POBJECT_ATTRIBUTES64;
+typedef CONST OBJECT_ATTRIBUTES64* PCOBJECT_ATTRIBUTES64;
+
+int main() {
+	int size = sizeof(OBJECT_ATTRIBUTES64::Attributes);
+	printf("size[1] : %d \n", size);
+
+	size = sizeof(OBJECT_ATTRIBUTES64::Length);
+	printf("size[2] : %d \n", size);
+
+	size = sizeof(OBJECT_ATTRIBUTES64::ObjectName);
+	printf("size[3] : %d \n", size);
+	return 0;
+};
+
+#endif
+
+#ifdef MAIN
 using namespace std;
 
 BOOL SetForcePrivilege();
@@ -13,7 +66,7 @@ int main() {
 	if (!result) exit(1);
 
 	std::cout << "PID : "; std::cin >> pid;
-	Injection(pid, L"C:\\Users\\bgyang\\Desktop\\sourcecode\\KernelDLLInjection\\test.dll");
+	Injection(pid, L"D:\\Source\\KernelDLLInjection\\test.dll");
 
 	return 0;
 };
@@ -55,8 +108,6 @@ BOOL Injection(const DWORD pid, const wchar_t* dllPath) {
 		return FALSE;
 	};
 
-
-
 	injectionDLLPathAddr = VirtualAllocEx(procHandle, NULL, MAX_PATH, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
 	if (injectionDLLPathAddr == NULL) {
 		cerr << "injectionDLLPathAddr" << endl;
@@ -94,3 +145,4 @@ BOOL Injection(const DWORD pid, const wchar_t* dllPath) {
 	
 	return TRUE;
 };
+#endif
