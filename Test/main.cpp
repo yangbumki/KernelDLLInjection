@@ -1,9 +1,48 @@
 #include <Windows.h>
 #include <iostream>
 
-#define OB_OPEN_OIBJECT_BY_POINTER_TEST TRUE
-#define NT_OPENPROCESS_TEST		FALSE
-#define MAIN					FALSE
+#define CALLING_CONVERTION					FALSE
+#define OB_OPEN_OIBJECT_BY_POINTER_TEST		FALSE
+#define NT_OPENPROCESS_TEST					FALSE
+#define MAIN								TRUE
+
+#if OB_OPEN_OBJECT_BY_POINTER
+#include <ntifs.h>
+
+typedef CCHAR KPROCESSOR_MODE;
+
+typedef enum _MODE {
+	KernelMode,
+	UserMode,
+	MaximumMode
+} MODE;
+
+NTKERNELAPI
+NTSTATUS
+ObOpenObjectByPointer(
+	_In_ PVOID Object,
+	_In_ ULONG HandleAttributes,
+	_In_opt_ PACCESS_STATE PassedAccessState,
+	_In_ ACCESS_MASK DesiredAccess,
+	_In_opt_ POBJECT_TYPE ObjectType,
+	_In_ KPROCESSOR_MODE AccessMode,
+	_Out_ PHANDLE Handle
+);
+
+#endif
+
+#if CALLING_CONVERTION
+void Function(int rcx, int rdx, int r8, int r9, int stack1, int stack2, int stack3) {
+	printf_s("rcx: %d, rdx: %d, r8: %d, r9: %d, stack1: %d, stack2: %d, stack3: %d", rcx, rdx, r8, r9, stack1, stack2, stack3);
+	printf("Calling\n");
+};
+
+int main() {
+	const static int rcx = 1, rdx = 2, r8 = 3, r9 = 4, stack1 = 5, stack2 = 6, stack3 = 7;
+	Function(rcx, rdx, r8, r9, stack1, stack2, stack3);
+	return 0;
+};
+#endif
 
 #if OB_OPEN_OIBJECT_BY_POINTER_TEST
 
@@ -115,15 +154,96 @@ using namespace std;
 
 BOOL SetForcePrivilege();
 BOOL Injection(const DWORD pid, const wchar_t* dllPath);
+BOOL CallNtCreateThreadEx(HANDLE processHandle, LPTHREAD_START_ROUTINE remoteThreadFunc, LPVOID remoteBuf);
+
+/*
+NTSTATUS
+NTAPI
+NtCreateThreadEx(
+	_Out_ PHANDLE ThreadHandle,
+	_In_ ACCESS_MASK DesiredAccess,
+	_In_opt_ POBJECT_ATTRIBUTES ObjectAttributes,
+	_In_ HANDLE ProcessHandle,
+	_In_ PUSER_THREAD_START_ROUTINE StartRoutine,
+	_In_opt_ PVOID Argument,
+	_In_ ULONG CreateFlags, // THREAD_CREATE_FLAGS_*
+	_In_ SIZE_T ZeroBits,
+	_In_ SIZE_T StackSize,
+	_In_ SIZE_T MaximumStackSize,
+	_In_opt_ PPS_ATTRIBUTE_LIST AttributeList
+);
+*/
+
+//전역 함수 포인터 선언
+typedef struct _UNICODE_STRING
+{
+	USHORT Length;
+	USHORT MaximumLength;
+	_Field_size_bytes_part_opt_(MaximumLength, Length) PWCH Buffer;
+
+} UNICODE_STRING, * PUNICODE_STRING;
+typedef struct _OBJECT_ATTRIBUTES
+{
+	ULONG Length;
+	HANDLE RootDirectory;
+	PUNICODE_STRING ObjectName;
+	ULONG Attributes;
+	PVOID SecurityDescriptor; // PSECURITY_DESCRIPTOR;
+	PVOID SecurityQualityOfService; // PSECURITY_QUALITY_OF_SERVICE
+} OBJECT_ATTRIBUTES, * POBJECT_ATTRIBUTES;
+
+typedef NTSTATUS(NTAPI* PUSER_THREAD_START_ROUTINE)(
+	_In_ PVOID ThreadParameter
+	);
+
+typedef struct _PS_ATTRIBUTE
+{
+	ULONG_PTR Attribute;
+	SIZE_T Size;
+	union
+	{
+		ULONG_PTR Value;
+		PVOID ValuePtr;
+	};
+	PSIZE_T ReturnLength;
+} PS_ATTRIBUTE, * PPS_ATTRIBUTE;
+
+typedef struct _PS_ATTRIBUTE_LIST
+{
+	SIZE_T TotalLength;
+	PS_ATTRIBUTE Attributes[1];
+} PS_ATTRIBUTE_LIST, * PPS_ATTRIBUTE_LIST;
+
+
+typedef NTSTATUS  (*pNtCreateThreadEx)(
+	_Out_ PHANDLE ThreadHandle,
+	_In_ ACCESS_MASK DesiredAccess,
+	_In_opt_ POBJECT_ATTRIBUTES ObjectAttributes,
+	_In_ HANDLE ProcessHandle,
+	_In_ LPTHREAD_START_ROUTINE StartRoutine,
+	_In_opt_ LPVOID Argument,
+	_In_ BOOL CreateFlags, // THREAD_CREATE_FLAGS_*
+	_In_ SIZE_T ZeroBits,
+	_In_ SIZE_T StackSize,
+	_In_ SIZE_T MaximumStackSize,
+	_In_opt_ PPS_ATTRIBUTE_LIST AttributeList
+	);
+
 
 int main() {
 	DWORD pid = 0;
+	wchar_t dllPath[MAX_PATH] = { 0, };
 
 	auto result = SetForcePrivilege();
 	if (!result) exit(1);
 
 	std::cout << "PID : "; std::cin >> pid;
-	Injection(pid, L"D:\\Source\\KernelDLLInjection\\test.dll");
+	
+	while (getchar() != '\n');
+	std::cout << "DLL Path : ";
+	_getws_s(dllPath);
+
+	Injection(pid,dllPath);
 
 	return 0;
 };
@@ -190,15 +310,41 @@ BOOL Injection(const DWORD pid, const wchar_t* dllPath) {
 		return FALSE;
 	};
 
-	remoteThreadHandle = CreateRemoteThread(procHandle, NULL, 0, (LPTHREAD_START_ROUTINE)procAddr, injectionDLLPathAddr, NULL, NULL);
-	if (remoteThreadHandle == NULL) {
-		cerr << "remoteThreadHandle" << endl;
+	auto result = CallNtCreateThreadEx(procHandle, (LPTHREAD_START_ROUTINE)procAddr, injectionDLLPathAddr);
+	if (!result) {
+		cerr << "CallNtCreateThreadEx" << endl;
 		return FALSE;
 	};
 
 	WaitForSingleObject(remoteThreadHandle, INFINITY);
 
 	CloseHandle(procHandle);
+
+	return TRUE;
+};
+
+BOOL CallNtCreateThreadEx(HANDLE processHandle, LPTHREAD_START_ROUTINE remoteThreadFunc, LPVOID remoteBuf) {
+	HMODULE ntdll = NULL;
+	HANDLE threadHandle = NULL;
+	void* originFuncAddr = NULL;
+
+	ntdll = GetModuleHandle(L"ntdll.dll");
+	if (ntdll == NULL) {
+		cerr << "ntdll" << endl;
+		return FALSE;
+	};
+
+	originFuncAddr = GetProcAddress(ntdll, "NtCreateThreadEx");
+	if (originFuncAddr == NULL) {
+		cerr << "originFuncAddr" << endl;
+		return FALSE;
+	};
+
+	auto result = ((pNtCreateThreadEx)originFuncAddr)(&threadHandle, 0x1FFFFF, NULL, processHandle, remoteThreadFunc, remoteBuf, NULL, NULL, NULL, NULL, NULL);
+	if (result != 0) {
+		cerr << "NtCreateThrreadEx" << endl;
+		return FALSE;
+	};
 
 	return TRUE;
 };
